@@ -37,7 +37,7 @@
  * Each completed session saves one CSV; test submissions should be done in
  * a separate DataPipe experiment (or excluded from the course dataset).
  */
-const VERSION = 'class-datapipe-1.0';
+const VERSION = 'class-datapipe-1.1';
 const DATAPIPE_EXPERIMENT_ID = '9n8bETQmN7mA';
 
 function randomHex(nBytes) {
@@ -72,10 +72,59 @@ function attachCopyButton() {
   });
 }
 
-const jsPsych = initJsPsych({
-  on_finish: function () {
+// Keep the final save result and the jsPsych finish event separate.
+// The DataPipe extension and jsPsych may run their callbacks in either order.
+// One shared renderer prevents a late callback from overwriting the code.
+let uploadResult = null;
+let experimentFinished = false;
+
+function hasAllRequiredTrials() {
+  const mainRows = jsPsych.data.get().filter({phase: 'main'}).values();
+  const congruent = mainRows.filter(r => r.congruency === 'congruent').length;
+  const incongruent = mainRows.filter(r => r.congruency === 'incongruent').length;
+  const participantMatches = mainRows.every(r =>
+    r.participant_id === PARTICIPANT_ID &&
+    r.completion_code === COMPLETION_CODE &&
+    r.group === GROUP
+  );
+  return mainRows.length === 80 && congruent === 40 &&
+    incongruent === 40 && participantMatches;
+}
+
+function renderFinalScreen() {
+  if (!experimentFinished) return;
+  if (uploadResult === null) {
     showStatus('<h2>実験データを送信しています</h2>' +
       '<p>保存が完了するまで、この画面を閉じないでください。</p>');
+    return;
+  }
+  const completed = hasAllRequiredTrials();
+  if (uploadResult.ok === true && completed) {
+    showStatus(`
+      <h2>実験が完了しました</h2>
+      <p>データの送信が成功しました。次の完了コードをCanvasの課題に提出してください。</p>
+      <div class="completion-code" id="completion-code">${COMPLETION_CODE}</div>
+      <p><button class="save" id="copy-code" type="button">完了コードをコピー</button></p>
+      <p class="small copy-status" id="copy-status"></p>
+      <p>コードを提出したら、このページを閉じて構いません。</p>
+      <p class="small">問い合わせ用参加者ID：${PARTICIPANT_ID}</p>
+    `);
+    attachCopyButton();
+  } else {
+    showStatus(`
+      <h2 class="error">完了を確認できませんでした</h2>
+      <p>${completed ? 'データ送信が正常に完了したことを確認できませんでした。' : '必要な本試行データが揃っていません。'}</p>
+      <p>Canvasに完了コードを提出せず、担当教員に連絡してください。</p>
+      <p>再実施は教員の指示があるまで控えてください。</p>
+      <p class="small">問い合わせ用参加者ID：${PARTICIPANT_ID}</p>
+    `);
+  }
+}
+
+const jsPsych = initJsPsych({
+  on_finish: function () {
+    experimentFinished = true;
+    renderFinalScreen();
   },
   extensions: [{
     type: jsPsychExtensionPipe,
@@ -85,39 +134,10 @@ const jsPsych = initJsPsych({
       format: 'csv',
       stream: false,
       wait_message: '<p>データを送信しています。ページを閉じないでください。</p>',
-      done_message: '<p>送信結果を確認しています。</p>',
+      done_message: '<p>送信結果を確認しています。ページを閉じないでください。</p>',
       on_save: (result) => {
-        const mainData = jsPsych.data.get().filter({phase: 'main'});
-        const mainRows = mainData.values();
-        const congruent = mainRows.filter(r => r.congruency === 'congruent').length;
-        const incongruent = mainRows.filter(r => r.congruency === 'incongruent').length;
-        const allConditionsValid = mainRows.every(r =>
-          r.participant_id === PARTICIPANT_ID &&
-          r.completion_code === COMPLETION_CODE &&
-          r.group === GROUP
-        );
-        const completed = mainRows.length === 80 && congruent === 40 &&
-          incongruent === 40 && allConditionsValid;
-        if (result && result.ok && completed) {
-          showStatus(`
-            <h2>実験が完了しました</h2>
-            <p>データが正常に保存されました。次の完了コードをCanvasの課題に提出してください。</p>
-            <div class="completion-code" id="completion-code">${COMPLETION_CODE}</div>
-            <p><button class="save" id="copy-code" type="button">完了コードをコピー</button></p>
-            <p class="small copy-status" id="copy-status"></p>
-            <p>コードを提出したら、このページを閉じて構いません。</p>
-            <p class="small">問い合わせ用参加者ID：${PARTICIPANT_ID}</p>
-          `);
-          attachCopyButton();
-        } else {
-          showStatus(`
-            <h2 class="error">完了を確認できませんでした</h2>
-            <p>${completed ? 'データ送信が正常に完了したことを確認できませんでした。' : '必要な本試行データが揃っていません。'}</p>
-            <p>Canvasに完了コードを提出しないでください。まず担当教員に連絡してください。</p>
-            <p>再度の実施は、教員の指示があるまで控えてください。</p>
-            <p class="small">問い合わせ用参加者ID：${PARTICIPANT_ID}</p>
-          `);
-        }
+        uploadResult = result || {ok: false};
+        renderFinalScreen();
       }
     }
   }]
